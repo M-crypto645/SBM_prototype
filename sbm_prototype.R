@@ -58,6 +58,28 @@ M_step = function(X, alpha, pi, tau_0){
          ncol=Q,nrow=n_nodes)
 }
 
+sim_ICL = function(X, Z_tilde, Q){
+  n_nodes = dim(X)[1]
+  alpha_comp = 0
+  for(q in 1:Q){
+    num_Z_tilde_equ_q = sum(Z_tilde == q)
+    alpha_q = num_Z_tilde_equ_q / n_nodes
+    alpha_comp = alpha_comp + num_Z_tilde_equ_q * log(alpha_q)
+  }
+  pi_comp = 0
+  for(q in 1:Q){
+    for(l in 1:Q){
+      num_Z_tilde_equ_q_l = (Z==q) %*% t(Z==l)
+      diag(num_Z_tilde_equ_q_l) = 0
+      m_1 = sum(num_Z_tilde_equ_q_l*X)
+      m_2 = sum(num_Z_tilde_equ_q_l*(1-X))
+      pi_q_l = m_1/(m_1+m_2)
+      pi_comp = pi_comp + (1/2)*sum(num_Z_tilde_equ_q_l*(X*log(pi_q_l) + (1-X)*log(1-pi_q_l)))
+    }
+  }
+  alpha_comp + pi_comp - (1/2)*(Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)+(Q-1)*log(n_nodes))
+}
+
 # future::plan("multisession", workers=5)
 # library(foreach)
 # library(doParallel)
@@ -95,4 +117,7 @@ pi_0 = alpha_pi_0[[2]]
 pi_0
 tau_0=M_step(X, alpha_0, pi_0, tau_0)
 sum(abs(pi_0-mu))
-table(apply(tau_0, 1, which.max), Z)
+Z_tilde = apply(tau_0, 1, which.max)
+table(Z_tilde, Z)
+sim_ICL(sbm$x, sbm$cl, K)
+ICL(sol)
