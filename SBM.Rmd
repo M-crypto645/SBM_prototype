@@ -102,7 +102,7 @@ As always, we perform the clustering using the `greed()` function with an `Sbm` 
 
 ```{r greed-clustering}
 class(sbm$x)
-sol <- greed(sbm$x,model = Sbm())
+sol <- greed(sbm$x,model = Sbm(), 5)
 ```
 
 We see that the fine-grained clustering structure with $K=6$ clusters is recovered. 
