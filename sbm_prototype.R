@@ -1,9 +1,4 @@
-library(future) # allows parralel processing in greed()
 library(Matrix) # sparse matrix
-library(ggplot2) # ploting and data 
-library(greed)
-library(dplyr)
-library(ggpubr)
 library(FixedPoint)
 library(cluster)
 
@@ -31,13 +26,13 @@ E_step = function(X, tau){
         t(apply(matrix(1:n_nodes), 1, function(i) tau[i,l]))
       diag(mult_matrix) = 0
       if (sum(mult_matrix) == 0){
-        pi[q,l] = 0#doesnt matter, could be any value
+        pi[q,l] = 0 #Doesnt really matter
       } else {
         pi[q,l] = sum(mult_matrix*X)/sum(mult_matrix)
       }
     }
   }
-  res = list(pi=alpha, mu=pi)
+  res = list(pi=alpha, mu=pi + .0001)
   class(res) = "E_step (Daudin 2008)"
   res
 }
@@ -46,11 +41,10 @@ E_step = function(X, tau){
 M_step = function(X, alpha, pi, tau_0){
   n_nodes = dim(X)[1]
   Q = length(alpha)
-  test=1
   fixed_point_equation = function(tau_vec){
+    res = matrix(tau_vec, n_nodes, Q)
+    res1 = matrix(tau_vec, n_nodes, Q)
     for (q in 1:Q){
-      res1 = matrix(tau_vec, n_nodes, Q)
-      res = matrix(tau_vec, n_nodes, Q)
       sol = matrix(numeric(n_nodes))
       for(l in 1:Q){
         mult_matrix = X
@@ -63,14 +57,16 @@ M_step = function(X, alpha, pi, tau_0){
       }
       res[,q] = (alpha[q] * exp(sol))[,1]
     }
+    #TODO: What if one row is 0???
     c(t(apply(res, 1, function(x) x/sum(x))))
   }
-  matrix(FixedPoint(fixed_point_equation, c(tau_0), Method="Aitken")$FixedPoint,
-         ncol=Q,nrow=n_nodes)
+  res=matrix(FixedPoint(fixed_point_equation, c(tau_0), Method="RRE", 
+                        ConvergenceMetricThreshold=1e-3, MaxIter=5)$FixedPoint,
+             ncol=Q,nrow=n_nodes)
+  res
 }
 
 sim_ICL = function(X, Z_tilde, Q){
-  print(Q)
   n_nodes = dim(X)[1]
   alpha_comp = 0
   for(q in 1:Q){
@@ -88,41 +84,39 @@ sim_ICL = function(X, Z_tilde, Q){
       m_1 = sum(num_Z_tilde_equ_q_l*X)
       m_2 = sum(num_Z_tilde_equ_q_l*(1-X))
       if (m_1 > 0 && m_2 > 0) {
-        #pi_q_l = m_1/(m_1+m_2)
-        #pi_comp = pi_comp + (1/2)*sum(num_Z_tilde_equ_q_l*(X*log(pi_q_l) + (1-X)*log(1-pi_q_l)))
         pi_comp = pi_comp + (1/2)*(m_1*log(m_1/(m_1+m_2)) + m_2*log(m_2/(m_1+m_2)))
       }
     }
   }
-  print("ICL ")
-  print(alpha_comp + pi_comp - (1/2)*(Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)/2+(Q-1)*log(n_nodes)))
-  alpha_comp + pi_comp - (1/2)*(Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)/2+(Q-1)*log(n_nodes))
+  ICL_res = alpha_comp + pi_comp - 
+    (1/2)*(Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)/2+(Q-1)*log(n_nodes))
+  print(paste("ICL: ", as.character(ICL_res), "for ", as.character(Q), "clusters"))
+  ICL_res
 }
 
-Daudin_Var_Bayes = function(X, Q, epsilon=1e-6, in_cluster=FALSE){
+Daudin_Var_Bayes = function(X, Q, epsilon=1e-3, in_cluster=FALSE){
   n_nodes = dim(X)[1]
   abs_error_0 = 1
   abs_error_1 = 0
-  #Z_0 = matrix(kmeans(X, Q)$cl)
   if (isFALSE(in_cluster) == FALSE){
     Z_0 = matrix(cutree(in_cluster, k=Q))
   } else{
     Z_0 = matrix(cutree(agnes(X, method = "ward"), k=Q))
   }
   tau_0=t(apply(Z_0, 1, function(j) c(rep(0,j-1), 1, rep(0,Q-j))))
-  while(sum(abs_error_0-abs_error_1) > epsilon){
+  loop_counter=0
+  while(sum(abs(abs_error_0-abs_error_1)) > epsilon){
     e_step = E_step(X, tau_0)
+    tau_0_backup = tau_0
     tau_0 = M_step(X, e_step$pi, e_step$mu, tau_0)
     abs_error_1 = abs_error_0
-    abs_error_0 = c(tau_0, e_step$pi, e_step$mu)
-    print("tau_0")
-    print(sum(is.na(tau_0)))
-    print("e_step$pi")
-    print(sum(is.na(e_step$pi)))
-    print("e_step$mu")
-    print(sum(is.na(e_step$mu)))
-    saver = list(tau_0, e_step$pi, e_step$mu)
-    assign("savepoint", value = saver, envir = .GlobalEnv)
+    abs_error_0 = c(e_step$pi, e_step$mu)
+    loop_counter = loop_counter + 1
+    if(loop_counter == 5 || sum(is.na(tau_0)) > 0){
+      tau_0 = tau_0_backup
+      abs_error_0=0
+      abs_error_1=0
+    }
   }
   apply(tau_0, 1, which.max)
   #TODO RETURN CLASS
@@ -140,44 +134,33 @@ Daudin_Var_Bayes_model_selection = function(X, Q=20, epsilon=1e-6){
   }
   while(ICL_prot_2 > ICL_prot_1){
     Q_dir = Q_dir + dir
-    print(Q_dir)
     ICL_prot_1 = ICL_prot_2
     ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir + dir, epsilon, in_cluster), Q_dir + dir)
   }
   Daudin_Var_Bayes(X, Q_dir, epsilon)
+  #TODO S4-class
 }
 
-N0  <- 400           # Number of node
-K0  <-  6           # Number of cluster
-pi0 <- rep(1/K0,K0)    # Clusters proportions
-lambda   <- 0.1     # Building the connectivity matrix template
-lambda_o <- 0.01
-Ks <- 3
-mu0 <- bdiag(lapply(1:(K0/Ks), function(k){
-  matrix(lambda_o,Ks,Ks)+diag(rep(lambda,Ks))}))+0.001
-sbm = sim_sbm(N0, pi0, mu0)
-
-# Z_0 = matrix(kmeans(sbm$x, K0)$cl)
-# tau_0=t(apply(Z_0,1, function(j) c(rep(0,j-1),1,rep(0,K0-j))))
+# N0  <- 400           # Number of node
+# K0  <-  3           # Number of cluster
+# pi0 <- rep(1/K0,K0)    # Clusters proportions
+# lambda   <- 0.1     # Building the connectivity matrix template
+# lambda_o <- 0.01
+# Ks <- 3
+# mu0 <- bdiag(lapply(1:(K0/Ks), function(k){
+#   matrix(lambda_o,Ks,Ks)+diag(rep(lambda,Ks))}))+0.001
+# sbm = sim_sbm(N0, pi0, mu0)
 # 
-#alpha_pi_00 = E_step(sbm$x, tau_00)
-#alpha_00 = alpha_pi_00$pi
-#pi_00 = alpha_pi_00$mu
-#pi_00
-#tau_00=M_step(sbm$x, alpha_00, pi_00, tau_00)
-#sum(abs(pi_00-mu0))
-#Z_tilde0 = apply(tau_00, 1, which.max)
-#table(Z_tilde0, sbm$cl)
-d_test = Daudin_Var_Bayes_model_selection(sbm$x, Q=20)
-table(d_test, sbm$cl)
-d_test_2 = Daudin_Var_Bayes(sbm$x, 20)
-sim_ICL(sbm$x, d_test_2, 9)
-table(d_test_2, sbm$cl)
+# d_test = Daudin_Var_Bayes_model_selection(sbm$x, Q=6)
+# table(d_test, sbm$cl)
+# d_test_2 = Daudin_Var_Bayes(sbm$x, sbm$K)
+# sim_ICL(sbm$x, d_test_2, 9)
+# table(d_test_2, sbm$cl)
 
-bug_pi = savepoint[[2]]
-bug_mu = savepoint[[3]]
-bug_tau = savepoint_tau0
-M_step(sbm$x, bug_pi, bug_mu, bug_tau)
+#bug_pi = savepoint[[2]]
+#bug_mu = savepoint[[3]]
+#bug_tau = savepoint_tau0
+#M_step(sbm$x, bug_pi, bug_mu, bug_tau)
 
 # future::plan("multisession", workers=5)
 # library(foreach)
