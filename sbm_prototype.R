@@ -5,23 +5,25 @@ library(greed)
 library(dplyr)
 library(ggpubr)
 library(FixedPoint)
+library(cluster)
 
 sim_sbm = function(n_nodes, alpha, pi){
   Q = length(alpha)
   Z = matrix(sample(1:Q, n_nodes, replace=TRUE, prob=alpha))
   select_col = Vectorize(function(x) pi[,x])
   select_row = function(x) Vectorize(function(y) x[y])(Z)
+  pi_formated = apply(select_col(Z), 2, select_row)
   X = Matrix(0,n_nodes,n_nodes)
-  pi = apply(select_col(Z), 2, select_row)
-  X = X + ((runif(n_nodes^2)+diag(1,n_nodes) <= pi) + 0)
-  list(Z, X, pi)
+  X = X + (runif(n_nodes^2)+diag(1,n_nodes) <= pi_formated) + 0
+  sbm = list(cl = c(Z), x = X, mu = pi, K = Q, N = n_nodes)
+  class(sbm) <- "Stochastic Block Model (Daudin 2008)"
+  sbm
 }
 
 E_step = function(X, tau){
   Q = dim(tau)[2]
   pi = matrix(numeric(Q^2),Q,Q)
   n_nodes = dim(tau)[1]
-  Q = dim(tau)[2]
   alpha = sapply(1:Q, function(q) mean(tau[,q]))
   for (l in 1:Q){
     for (q in 1:Q){
@@ -29,30 +31,35 @@ E_step = function(X, tau){
         t(apply(matrix(1:n_nodes), 1, function(i) tau[i,l]))
       diag(mult_matrix) = 0
       if (sum(mult_matrix) == 0){
-        pi[q,l] = 0
+        pi[q,l] = 0#doesnt matter, could be any value
       } else {
         pi[q,l] = sum(mult_matrix*X)/sum(mult_matrix)
       }
     }
   }
-  list(alpha, pi)
+  res = list(pi=alpha, mu=pi)
+  class(res) = "E_step (Daudin 2008)"
+  res
 }
+
 
 M_step = function(X, alpha, pi, tau_0){
   n_nodes = dim(X)[1]
   Q = length(alpha)
-  #tau_0=matrix(rep(1/3,n_nodes*Q),nrow=n_nodes,ncol=Q)
+  test=1
   fixed_point_equation = function(tau_vec){
     for (q in 1:Q){
       res1 = matrix(tau_vec, n_nodes, Q)
       res = matrix(tau_vec, n_nodes, Q)
       sol = matrix(numeric(n_nodes))
       for(l in 1:Q){
-        if (pi[q,l] != 0){
-          test333 = (X * log(pi[q,l]) + (1-X) * log(1-pi[q,l]))
-          diag(test333)=0
-          sol = sol + test333 %*% res1[,l]
-        }
+        mult_matrix = X
+        mult_matrix[X==1] = log(pi[q,l]) 
+        mult_matrix[X==0] = log(1-pi[q,l])
+        diag(mult_matrix)=0
+        add_matrix = mult_matrix %*% res1[,l]
+        add_matrix[is.na(add_matrix)] = 0
+        sol = sol + add_matrix
       }
       res[,q] = (alpha[q] * exp(sol))[,1]
     }
@@ -76,85 +83,101 @@ sim_ICL = function(X, Z_tilde, Q){
   pi_comp = 0
   for(q in 1:Q){
     for(l in 1:Q){
-      num_Z_tilde_equ_q_l = (Z==q) %*% t(Z==l)
+      num_Z_tilde_equ_q_l = Matrix(Z_tilde==q) %*% t(Matrix(Z_tilde==l))
       diag(num_Z_tilde_equ_q_l) = 0
-      if (sum(num_Z_tilde_equ_q_l) > 0) {
-        m_1 = sum(num_Z_tilde_equ_q_l*X)
-        m_2 = sum(num_Z_tilde_equ_q_l*(1-X))
-        if (m_1 == 0){
-          pi_q_l = 0
-          pi_comp = pi_comp + (1/2)*sum(num_Z_tilde_equ_q_l*((1-X)*log(1-pi_q_l)))
-        } else if (m_2 == 0){
-          pi_q_l = 1
-          pi_comp = pi_comp + (1/2)*sum(num_Z_tilde_equ_q_l*(X*log(pi_q_l)))
-        } else{
-          pi_q_l = m_1/(m_1+m_2)
-          pi_comp = pi_comp + (1/2)*sum(num_Z_tilde_equ_q_l*(X*log(pi_q_l) + (1-X)*log(1-pi_q_l)))
-        }
-      } else{
-        print("FAIL")
+      m_1 = sum(num_Z_tilde_equ_q_l*X)
+      m_2 = sum(num_Z_tilde_equ_q_l*(1-X))
+      if (m_1 > 0 && m_2 > 0) {
+        #pi_q_l = m_1/(m_1+m_2)
+        #pi_comp = pi_comp + (1/2)*sum(num_Z_tilde_equ_q_l*(X*log(pi_q_l) + (1-X)*log(1-pi_q_l)))
+        pi_comp = pi_comp + (1/2)*(m_1*log(m_1/(m_1+m_2)) + m_2*log(m_2/(m_1+m_2)))
       }
     }
   }
-  print("picomp")
-  print(pi_comp)
-  print("alpha")
-  print(alpha_comp)
-  print("REST")
-  print(alpha_comp + pi_comp - (1/2)*Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)+(Q-1)*log(n_nodes))
-  alpha_comp + pi_comp - (1/2)*Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)+(Q-1)*log(n_nodes)
+  print("ICL ")
+  print(alpha_comp + pi_comp - (1/2)*(Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)/2+(Q-1)*log(n_nodes)))
+  alpha_comp + pi_comp - (1/2)*(Q*(Q+1)*log(n_nodes*(n_nodes-1)/2)/2+(Q-1)*log(n_nodes))
 }
 
-Daudin_Var_Bayes = function(X, Q, epsilon=1e-6){
+Daudin_Var_Bayes = function(X, Q, epsilon=1e-6, in_cluster=FALSE){
   n_nodes = dim(X)[1]
   abs_error_0 = 1
   abs_error_1 = 0
-  Z_0 = matrix(kmeans(X, Q)$cl)
+  #Z_0 = matrix(kmeans(X, Q)$cl)
+  if (isFALSE(in_cluster) == FALSE){
+    Z_0 = matrix(cutree(in_cluster, k=Q))
+  } else{
+    Z_0 = matrix(cutree(agnes(X, method = "ward"), k=Q))
+  }
   tau_0=t(apply(Z_0, 1, function(j) c(rep(0,j-1), 1, rep(0,Q-j))))
-  loop=0
-  while(sum(abs_error_0-abs_error_1) > epsilon && loop <= 20){
-    alpha_pi_0 = E_step(X, tau_0)
-    alpha_0 = alpha_pi_0[[1]]
-    pi_0 = alpha_pi_0[[2]]
-    tau_0 = M_step(X, alpha_0, pi_0, tau_0)
+  while(sum(abs_error_0-abs_error_1) > epsilon){
+    e_step = E_step(X, tau_0)
+    tau_0 = M_step(X, e_step$pi, e_step$mu, tau_0)
     abs_error_1 = abs_error_0
-    abs_error_0 = c(alpha_0, pi_0)
-    loop = loop+1
+    abs_error_0 = c(tau_0, e_step$pi, e_step$mu)
+    print("tau_0")
+    print(sum(is.na(tau_0)))
+    print("e_step$pi")
+    print(sum(is.na(e_step$pi)))
+    print("e_step$mu")
+    print(sum(is.na(e_step$mu)))
+    saver = list(tau_0, e_step$pi, e_step$mu)
+    assign("savepoint", value = saver, envir = .GlobalEnv)
   }
-  if (loop==0){
-    print("loop error")
-  }
-  Z_tilde = apply(tau_0, 1, which.max)
-  Z_tilde
+  apply(tau_0, 1, which.max)
+  #TODO RETURN CLASS
 }
 
 Daudin_Var_Bayes_model_selection = function(X, Q=20, epsilon=1e-6){
   Q_dir = Q
-  ICL_prot_1 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir, epsilon), Q_dir)
+  in_cluster = agnes(X, method = "ward")
+  ICL_prot_1 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir, epsilon, in_cluster), Q_dir)
   dir = 1
-  ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir+dir, epsilon), Q_dir + dir)
+  ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir+dir, epsilon, in_cluster), Q_dir + dir)
   if (ICL_prot_2 <= ICL_prot_1){
     dir = -1
-    ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir+dir, epsilon), Q_dir + dir) 
+    ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir+dir, epsilon, in_cluster), Q_dir + dir) 
   }
-  backup=0
-  while(backup<=5 && ICL_prot_2 < -6000){
-    if(ICL_prot_2 <= ICL_prot_1){
-      ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir + dir, epsilon), Q_dir + dir)
-      backup=backup+1
-    } else{
+  while(ICL_prot_2 > ICL_prot_1){
     Q_dir = Q_dir + dir
     print(Q_dir)
     ICL_prot_1 = ICL_prot_2
-    ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir + dir, epsilon), Q_dir + dir)
-    backup=0
-    }
+    ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir + dir, epsilon, in_cluster), Q_dir + dir)
   }
-  print(Daudin_Var_Bayes(X, Q_dir + dir, epsilon))
-  print(Q_dir + dir)
-  Z_tilde = Daudin_Var_Bayes(X, Q_dir, epsilon)
-  Z_tilde
+  Daudin_Var_Bayes(X, Q_dir, epsilon)
 }
+
+N0  <- 400           # Number of node
+K0  <-  6           # Number of cluster
+pi0 <- rep(1/K0,K0)    # Clusters proportions
+lambda   <- 0.1     # Building the connectivity matrix template
+lambda_o <- 0.01
+Ks <- 3
+mu0 <- bdiag(lapply(1:(K0/Ks), function(k){
+  matrix(lambda_o,Ks,Ks)+diag(rep(lambda,Ks))}))+0.001
+sbm = sim_sbm(N0, pi0, mu0)
+
+# Z_0 = matrix(kmeans(sbm$x, K0)$cl)
+# tau_0=t(apply(Z_0,1, function(j) c(rep(0,j-1),1,rep(0,K0-j))))
+# 
+#alpha_pi_00 = E_step(sbm$x, tau_00)
+#alpha_00 = alpha_pi_00$pi
+#pi_00 = alpha_pi_00$mu
+#pi_00
+#tau_00=M_step(sbm$x, alpha_00, pi_00, tau_00)
+#sum(abs(pi_00-mu0))
+#Z_tilde0 = apply(tau_00, 1, which.max)
+#table(Z_tilde0, sbm$cl)
+d_test = Daudin_Var_Bayes_model_selection(sbm$x, Q=20)
+table(d_test, sbm$cl)
+d_test_2 = Daudin_Var_Bayes(sbm$x, 20)
+sim_ICL(sbm$x, d_test_2, 9)
+table(d_test_2, sbm$cl)
+
+bug_pi = savepoint[[2]]
+bug_mu = savepoint[[3]]
+bug_tau = savepoint_tau0
+M_step(sbm$x, bug_pi, bug_mu, bug_tau)
 
 # future::plan("multisession", workers=5)
 # library(foreach)
@@ -170,33 +193,3 @@ Daudin_Var_Bayes_model_selection = function(X, Q=20, epsilon=1e-6){
 # clusterSetRNGStream(cl)
 # registerDoParallel(cl, cores = n_workers)
 
-N  <- 400           # Number of node
-K  <-  6           # Number of cluster
-pi <- rep(1/K,K)    # Clusters proportions 
-lambda   <- 0.1     # Building the connectivity matrix template
-lambda_o <- 0.01
-Ks <- 3
-mu <- bdiag(lapply(1:(K/Ks), function(k){
-  matrix(lambda_o,Ks,Ks)+diag(rep(lambda,Ks))}))+0.001
-Z_X = sim_sbm(N, pi, mu)
-X = Z_X[[2]]
-
-Z = Z_X[[1]]
-Z_0 = matrix(kmeans(X, K)$cl)
-tau_0=t(apply(Z_0,1, function(j) c(rep(0,j-1),1,rep(0,K-j))))
-#tau_0=matrix(runif(N*K),nrow=N,ncol=K)
-#tau_0 = t(apply(tau_0, 1, function(x) x/sum(x)))
-
-alpha_pi_0 = E_step(X, tau_0)
-alpha_0 = alpha_pi_0[[1]]
-pi_0 = alpha_pi_0[[2]]
-pi_0
-tau_0=M_step(X, alpha_0, pi_0, tau_0)
-sum(abs(pi_0-mu))
-Z_tilde = apply(tau_0, 1, which.max)
-table(Z_tilde, Z)
-#Daudin_Var_Bayes_model_selection(X)
-d_test = Daudin_Var_Bayes_model_selection(X, Q=20)
-table(d_test, Z)
-sim_ICL(X, Daudin_Var_Bayes(X, 2), 2)
-ICL(sol)
