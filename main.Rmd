@@ -27,7 +27,7 @@ Loads packages and set a future plan for parallel processing.
 library(Matrix) # sparse matrix
 library(FixedPoint) # Fixed point solution for the variational M-step
 library(cluster) # Clustering to find the initial value
-source("sbm_prototype.R")
+source("algorithms.R")
 source("classes.R")
 set.seed(2134)
 
