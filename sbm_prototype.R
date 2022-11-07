@@ -11,11 +11,16 @@ sim_sbm = function(n_nodes, alpha, pi){
   X = Matrix(0,n_nodes,n_nodes)
   X = X + (runif(n_nodes^2)+diag(1,n_nodes) <= pi_formated) + 0
   sbm = list(cl = c(Z), x = X, mu = pi, K = Q, N = n_nodes)
-  class(sbm) <- "Stochastic Block Model (Daudin 2008)"
+  class(sbm) <- "SBM"
   sbm
 }
 
-E_step = function(X, tau){
+var_e_step = function(sbm, tau){
+  if(class(sbm) == "SBM"){
+    X = sbm$x
+  } else{
+    X = sbm
+  }
   Q = dim(tau)[2]
   pi = matrix(numeric(Q^2),Q,Q)
   n_nodes = dim(tau)[1]
@@ -33,12 +38,17 @@ E_step = function(X, tau){
     }
   }
   res = list(pi=alpha, mu=pi + .0001)
-  class(res) = "E_step (Daudin 2008)"
+  class(res) = "Var_E_step"
   res
 }
 
 
-M_step = function(X, alpha, pi, tau_0){
+var_m_step = function(sbm, alpha, pi, tau_0, epsilon=1e-3, max_iter=5){
+  if(class(sbm) == "SBM"){
+    X = sbm$x
+  } else{
+    X = sbm
+  }
   n_nodes = dim(X)[1]
   Q = length(alpha)
   fixed_point_equation = function(tau_vec){
@@ -57,16 +67,23 @@ M_step = function(X, alpha, pi, tau_0){
       }
       res[,q] = (alpha[q] * exp(sol))[,1]
     }
-    #TODO: What if one row is 0???
+    #What if one row is 0???
     c(t(apply(res, 1, function(x) x/sum(x))))
   }
-  res=matrix(FixedPoint(fixed_point_equation, c(tau_0), Method="RRE", 
-                        ConvergenceMetricThreshold=1e-3, MaxIter=5)$FixedPoint,
-             ncol=Q,nrow=n_nodes)
+  fixed_point = FixedPoint(fixed_point_equation, c(tau_0), Method="RRE", 
+                   ConvergenceMetricThreshold=epsilon, MaxIter = max_iter)
+  res=list(fixed_point_epsilon=epsilon, method="RRE", fpevals = fixed_point$fpevals,
+           tau_0=matrix(fixed_point$FixedPoint, ncol=Q,nrow=n_nodes))
+  class(res) <- "Var_M_step"
   res
 }
 
-sim_ICL = function(X, Z_tilde, Q){
+sim_ICL = function(sbm, Z_tilde, Q){
+  if(class(sbm) == "SBM"){
+    X = sbm$x
+  } else{
+    X = sbm
+  }
   n_nodes = dim(X)[1]
   alpha_comp = 0
   for(q in 1:Q){
@@ -94,7 +111,15 @@ sim_ICL = function(X, Z_tilde, Q){
   ICL_res
 }
 
-Daudin_Var_Bayes = function(X, Q, epsilon=1e-3, in_cluster=FALSE){
+
+
+var_bayes = function(sbm, Q, epsilon=1e-3, in_cluster=FALSE, max_iter=5,
+                     conv_threshold_m_step=1e-3, max_iter_m_step=5){
+  if(class(sbm) == "SBM"){
+    X = sbm$x
+  } else{
+    X = sbm
+  }
   n_nodes = dim(X)[1]
   abs_error_0 = 1
   abs_error_1 = 0
@@ -106,57 +131,105 @@ Daudin_Var_Bayes = function(X, Q, epsilon=1e-3, in_cluster=FALSE){
   tau_0=t(apply(Z_0, 1, function(j) c(rep(0,j-1), 1, rep(0,Q-j))))
   loop_counter=0
   while(sum(abs(abs_error_0-abs_error_1)) > epsilon){
-    e_step = E_step(X, tau_0)
-    tau_0_backup = tau_0
-    tau_0 = M_step(X, e_step$pi, e_step$mu, tau_0)
+    e_step = var_e_step(X, tau_0)
+    m_step = var_m_step(X, e_step$pi, e_step$mu, tau_0, 
+                        max_iter=max_iter_m_step, 
+                        epsilon=conv_threshold_m_step)
+    tau_0 = m_step$tau_0
     abs_error_1 = abs_error_0
     abs_error_0 = c(e_step$pi, e_step$mu)
     loop_counter = loop_counter + 1
-    if(loop_counter == 5 || sum(is.na(tau_0)) > 0){
-      tau_0 = tau_0_backup
-      abs_error_0=0
-      abs_error_1=0
+    if(loop_counter == max_iter){
+      break;
     }
   }
-  apply(tau_0, 1, which.max)
-  #TODO RETURN CLASS
+  cl=apply(tau_0, 1, which.max)
+  info = c(e_step, m_step, list(Q=Q))
+  info$tau_0 = NULL #tau_0 is not interesting, since cl is already computed
+  res = new("ICL_object", x=X, cl=cl, info=info, Q=Q)
+  res
 }
 
-Daudin_Var_Bayes_model_selection = function(X, Q=20, epsilon=1e-6){
+
+
+var_bayes_model_selection = function(sbm, Q=6, epsilon=1e-3, max_iter=5,
+                                     conv_threshold_m_step=1e-3, 
+                                     max_iter_m_step=5){
+  if(class(sbm) == "SBM"){
+    X = sbm$x
+  } else{
+    X = sbm
+  }
   Q_dir = Q
   in_cluster = agnes(X, method = "ward")
-  ICL_prot_1 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir, epsilon, in_cluster), Q_dir)
+  var_bayes_with_prefix = function(Q_dir){
+    var_bayes(X, Q_dir, epsilon, in_cluster, max_iter,
+              conv_threshold_m_step, max_iter_m_step)
+  }
+  var_bayes_res_0 = var_bayes_with_prefix(Q_dir)
+  ICL_prot_1 = ICL(var_bayes_res_0)
   dir = 1
-  ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir+dir, epsilon, in_cluster), Q_dir + dir)
+  var_bayes_res = var_bayes_with_prefix(Q_dir + dir)
+  ICL_prot_2 = ICL(var_bayes_res)
   if (ICL_prot_2 <= ICL_prot_1){
     dir = -1
-    ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir+dir, epsilon, in_cluster), Q_dir + dir) 
+    var_bayes_res = var_bayes_with_prefix(Q_dir + dir)
+    ICL_prot_2 = ICL(var_bayes_res) 
   }
   while(ICL_prot_2 > ICL_prot_1){
+    var_bayes_res_0 = var_bayes_res
     Q_dir = Q_dir + dir
     ICL_prot_1 = ICL_prot_2
-    ICL_prot_2 = sim_ICL(X, Daudin_Var_Bayes(X, Q_dir + dir, epsilon, in_cluster), Q_dir + dir)
+    var_bayes_res = var_bayes_with_prefix(Q_dir + dir)
+    ICL_prot_2 = ICL(var_bayes_res)
   }
-  Daudin_Var_Bayes(X, Q_dir, epsilon)
-  #TODO S4-class
+  var_bayes_res_0
 }
 
-# N0  <- 400           # Number of node
-# K0  <-  3           # Number of cluster
-# pi0 <- rep(1/K0,K0)    # Clusters proportions
-# lambda   <- 0.1     # Building the connectivity matrix template
-# lambda_o <- 0.01
-# Ks <- 3
-# mu0 <- bdiag(lapply(1:(K0/Ks), function(k){
-#   matrix(lambda_o,Ks,Ks)+diag(rep(lambda,Ks))}))+0.001
-# sbm = sim_sbm(N0, pi0, mu0)
-# 
-# d_test = Daudin_Var_Bayes_model_selection(sbm$x, Q=6)
-# table(d_test, sbm$cl)
-# d_test_2 = Daudin_Var_Bayes(sbm$x, sbm$K)
-# sim_ICL(sbm$x, d_test_2, 9)
-# table(d_test_2, sbm$cl)
+setClassUnion("adj_matrix_type", c("matrix", "dgCMatrix"))
+setClass("ICL_object", 
+         slots=list(ICL="numeric", cl="vector", info="list", 
+                    x="adj_matrix_type", Q="numeric"))
+setGeneric("ICL", function(object) sim_ICL(object))
+setMethod("ICL",
+          "ICL_object",
+          function(object) {
+            if(length(object@ICL)==0){
+              res = sim_ICL(object@x, object@cl, object@Q)
+              object@ICL = res
+            } else {
+              res = object@ICL
+            }
+            res
+          }
+)
 
+
+N0  <- 400           # Number of node
+K0  <-  6           # Number of cluster
+pi0 <- rep(1/K0,K0)    # Clusters proportions
+lambda   <- 0.1     # Building the connectivity matrix template
+lambda_o <- 0.01
+Ks <- 3
+mu0 <- bdiag(lapply(1:(K0/Ks), function(k){
+  matrix(lambda_o,Ks,Ks)+diag(rep(lambda,Ks))}))+0.001
+sbm = sim_sbm(N0, pi0, mu0)
+
+
+#Z_0=matrix(cutree(agnes(sbm$x, method = "ward"), k=K0))
+#tau_0=t(apply(Z_0, 1, function(j) c(rep(0,j-1), 1, rep(0,Ks-j))))
+#test1 = var_e_step(sbm, tau_0)
+#test2 = var_m_step(sbm, test1$pi, test1$mu, tau_0)
+
+test3 = var_bayes(sbm, 6)
+ICL(test3)
+
+d_test = var_bayes_model_selection(sbm$x, Q=3)
+table(d_test@cl, sbm$cl)
+
+test = new("ICL_object", x=sbm$x)
+test@sbm = sbm
+test
 #bug_pi = savepoint[[2]]
 #bug_mu = savepoint[[3]]
 #bug_tau = savepoint_tau0
