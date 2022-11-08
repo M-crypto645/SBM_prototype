@@ -3,8 +3,7 @@ title: "Graph clustering with the Stochastic block model (using Daudin's ICL)"
 author: "Martin Metodiev"
 output:
   pdf_document:
-    toc: yes
-    toc_depth: '1'
+    toc: no
 ---
 
 ```{r, include = FALSE, message=FALSE}
@@ -21,9 +20,7 @@ p.caption {
 }
 ```
 
-
-Loads packages and set a future plan for parallel processing.
-```{r setup-packages,message=FALSE, include=TRUE}
+```{r setup-packages,message=FALSE, include=FALSE, echo=FALSE}
 library(Matrix) # sparse matrix
 library(FixedPoint) # Fixed point solution for the variational M-step
 library(cluster) # Clustering to find the initial value
@@ -42,19 +39,17 @@ The following is a brief project with the goal to implement Daudin's ICL:
 \begin{equation}
 \label{eq:sbm}
 \begin{aligned}
-\pi&\sim \textrm{Dirichlet}_K(\alpha),\\
-\theta_{k,l} & \sim \textrm{Beta}(a_0, b_0), \\
-Z_i&\sim \mathcal{M}(1,\pi),\\
-\forall (i,j), \quad x_{ij} \mid Z_{ik}Z_{jl}=1& \sim \mathcal{B}(\theta_{k,l}).
+ICL(m_Q)&=\max_\theta\log\mathcal{L}(\mathcal{X},\tilde{\mathcal{Z}}|\theta,m_Q)\\&-\frac{1}{2}\times\frac{Q(Q+1)}{2}\log\frac{n(n-1)}{2}-\frac{Q-1}{2}\log(n)
 \end{aligned}
 \end{equation}
 ```
 
 ## Simulation scenario
 
-The following simulation is copied from a vignette from the greed package. However, none of its code is used.
+The following simulation scenario was inspired from a vignette from the greed package. However, none of this package's code is used. All new functions used were written by myself.
 
-We begin by simulating from a hierarchically structured SBM model, with 2 large clusters, each composed of 3 smaller clusters with higher connection probabilities, making a total of 6 clusters. Greed comes shipped with simulation function for the different generative models it handle and we will take advantage of the ``rsbm()` function to simulate an SBM graph with 6 clusters and 400 nodes:
+We begin by simulating from a hierarchically structured SBM model, with 2 large clusters, each composed of 3 smaller clusters with higher connection probabilities, making a total of 6 clusters.
+
 ```{r, fig.show='hold'}
 N  <- 400           # Number of node
 K  <- 6             # Number of cluster
@@ -67,6 +62,9 @@ mu <- bdiag(lapply(1:(K/Ks), function(k){
 sbm <- sim_sbm(N,pi,mu) # Simulation
 ```
 
+The method finds a very good solution. Model selection is done via Daudin's ICL as described above. Note that convergence thresholds are set to be quite small (1e-3), so large errors can (and do) occur, especially when the number of classes Q is large. In fact, setting Q<=6 is recommended.
+
 ```{r, fig.show='hold'}
-d_test = var_bayes_model_selection(sbm$x, Q=3)
-table(d_test@cl, sbm$cl)
+sol = var_bayes_model_selection(sbm$x, Q=3)
+table(sol@cl, sbm$cl)
+```
